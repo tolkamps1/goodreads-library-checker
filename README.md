@@ -37,7 +37,7 @@ VIRL_BRANCH=Sooke             # optional: your preferred branch for prioritized 
 check-library
 
 # Pass values directly
-check-library --user-id 133374557 --branch Sooke
+check-library --user-id 123456789 --branch Sooke
 
 # Show all TBR books including checked-out ones
 check-library --all
@@ -55,6 +55,6 @@ Your Goodreads shelf must be **public** for the RSS feed to work. You can check 
 
 ## Notes
 
-- Only physical copies are checked — eBooks/audiobooks via OverDrive show as "no physical copies"
+- Only physical copies are checked — eBooks/audiobooks via OverDrive/Libby show as "no physical copies"
 - Availability is live at time of running; it won't auto-refresh
 - Requests are rate-limited to be polite to VIRL's servers

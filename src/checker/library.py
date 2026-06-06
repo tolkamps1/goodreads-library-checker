@@ -204,7 +204,7 @@ class VIRLCatalog:
         return _all_bibs(soup, limit=5)
 
 
-# --- module-level helpers (no network) ---
+# --- module-level helpers ---
 
 def _extract_cells(html: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
