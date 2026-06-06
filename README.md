@@ -55,6 +55,7 @@ Your Goodreads shelf must be **public** for the RSS feed to work. You can check 
 
 ## Notes
 
-- Only physical copies are checked — eBooks/audiobooks via OverDrive/Libby show as "no physical copies"
+- Only physical copies are checked by default
+- Add `--digital` flag to see eBooks/audiobooks via OverDrive/Libby
 - Availability is live at time of running; it won't auto-refresh
 - Requests are rate-limited to be polite to VIRL's servers

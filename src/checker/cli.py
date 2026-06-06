@@ -9,7 +9,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCo
 from rich.table import Table
 
 from .goodreads import Book, fetch_tbr
-from .library import LibraryResult, VIRLCatalog
+from .library import DigitalResult, LibraryResult, VIRLCatalog
 
 _WORKERS = 3
 
@@ -38,10 +38,15 @@ def main() -> None:
              "Books available there are listed first. Also set via VIRL_BRANCH env var.",
     )
     parser.add_argument(
+        "--digital",
+        action="store_true",
+        help="Check ebook/audiobook availability on Libby instead of physical copies",
+    )
+    parser.add_argument(
         "--all",
         action="store_true",
         dest="show_all",
-        help="Also show books that are checked out / unavailable",
+        help="Also show books that are checked out / unavailable (physical mode only)",
     )
     args = parser.parse_args()
 
@@ -62,7 +67,10 @@ def main() -> None:
         sys.exit(0)
 
     console.print(f"Found [bold]{len(books)}[/bold] books. Checking VIRL catalog...\n")
-    _run_virl(books, branch=args.branch, show_all=args.show_all)
+    if args.digital:
+        _run_virl_digital(books)
+    else:
+        _run_virl(books, branch=args.branch, show_all=args.show_all)
 
 
 def _run_virl(books: list[Book], branch: str | None, show_all: bool) -> None:
@@ -99,6 +107,80 @@ def _run_virl(books: list[Book], branch: str | None, show_all: bool) -> None:
         branch=branch,
         show_all=show_all,
     )
+
+
+def _run_virl_digital(books: list[Book]) -> None:
+    all_results: list[DigitalResult] = []
+    not_found: list[Book] = []
+
+    def check_one(book: Book) -> tuple[Book, list[DigitalResult]]:
+        return book, VIRLCatalog().check_digital(book)
+
+    with Progress(
+        SpinnerColumn(), BarColumn(), MofNCompleteColumn(),
+        TextColumn("{task.description}"),
+        console=console, transient=True,
+    ) as progress:
+        task = progress.add_task(f"Checking {len(books)} books...", total=len(books))
+        lock = Lock()
+        with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
+            for future in as_completed(pool.submit(check_one, b) for b in books):
+                book, results = future.result()
+                with lock:
+                    if results:
+                        all_results.extend(results)
+                    else:
+                        not_found.append(book)
+                    progress.advance(task)
+
+    _print_digital_results(all_results, not_found)
+
+
+def _print_digital_results(results: list[DigitalResult], not_found: list[Book]) -> None:
+    available = [r for r in results if r.is_available]
+    on_hold = [r for r in results if not r.is_available]
+
+    if not available and not on_hold:
+        console.print("[yellow]No books from your TBR are in the VIRL digital catalog.[/yellow]")
+    else:
+        if available:
+            table = Table(title="Available now on Libby", show_lines=True)
+            table.add_column("Title", style="bold")
+            table.add_column("Author")
+            table.add_column("Format", style="cyan")
+            table.add_column("Copies", style="green")
+            table.add_column("Libby URL", style="dim")
+            for r in sorted(available, key=lambda r: r.format):
+                copies = f"{r.available_copies}/{r.owned_copies}"
+                table.add_row(r.book.title, r.book.author, r.format, copies, r.libby_url)
+            console.print(table)
+            console.print()
+
+        if on_hold:
+            table = Table(title="On hold / waitlist on Libby", show_lines=True)
+            table.add_column("Title", style="bold")
+            table.add_column("Author")
+            table.add_column("Format", style="cyan")
+            table.add_column("Copies", style="dim")
+            table.add_column("Holds", style="yellow")
+            table.add_column("Est. wait", style="yellow")
+            table.add_column("Libby URL", style="dim")
+            for r in sorted(on_hold, key=lambda r: (r.estimated_wait_days or 999, r.format)):
+                copies = f"0/{r.owned_copies}"
+                holds = str(r.holds_count)
+                wait = f"~{r.estimated_wait_days}d" if r.estimated_wait_days else "—"
+                table.add_row(
+                    r.book.title, r.book.author, r.format, copies, holds, wait, r.libby_url
+                )
+            console.print(table)
+            console.print()
+
+    if not_found:
+        console.print(
+            f"\n[dim]{len(not_found)} book(s) not found in VIRL digital catalog:[/dim]"
+        )
+        for book in not_found:
+            console.print(f"  [dim]• {book}[/dim]")
 
 
 def _matches_branch(branch_name: str, preferred: str) -> bool:

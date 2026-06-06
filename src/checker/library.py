@@ -14,6 +14,9 @@ KEYWORD_SEARCH = CATALOG_BASE + "/search/?searchtype=X&SORT=D&searcharg={query}&
 TITLE_SEARCH = CATALOG_BASE + "/search/?searchtype=t&SORT=D&searcharg={query}&searchscope=45"
 RECORD_URL = CATALOG_BASE + "/record={bib_id}"
 
+OD_AVAILABILITY = "https://thunder.api.overdrive.com/v2/libraries/virl/media/{title_id}/availability"
+OD_MEDIA_URL = "https://virl.overdrive.com/media/{title_id}"
+
 _STATUS_PATTERN = re.compile(
     r"^(Available|DUE|In Transit|On Holdshelf|MISSING|ON ORDER|LOST|CLAIMS RETURNED)",
     re.IGNORECASE,
@@ -56,6 +59,19 @@ def _bib_matches(cells: list[str], book: Book) -> bool:
     title_ok = bool(title_words & _normalize(record_title))
     author_ok = bool(author_words & _normalize_author(record_author))
     return title_ok and author_ok
+
+
+@dataclass
+class DigitalResult:
+    book: Book
+    title_id: str
+    format: str          # "ebook" or "audiobook"
+    is_available: bool
+    available_copies: int
+    owned_copies: int
+    holds_count: int
+    estimated_wait_days: int | None
+    libby_url: str
 
 
 @dataclass
@@ -152,6 +168,64 @@ class VIRLCatalog:
 
         return try_bibs(self._title_lookup(book.title))
 
+    def check_digital(self, book: Book) -> list[DigitalResult]:
+        """Return ebook/audiobook availability from OverDrive/Libby."""
+        query = quote_plus(f"{book.title} {book.author}")
+        url = KEYWORD_SEARCH.format(query=query)
+        try:
+            resp = self._get(url)
+        except requests.RequestException:
+            return []
+
+        title_ids = _extract_digital_title_ids(resp.text, book)
+        results: list[DigitalResult] = []
+        seen_formats: set[str] = set()
+
+        for title_id, fmt in title_ids:
+            if fmt in seen_formats:
+                continue
+            result = self._od_availability(title_id, fmt, book)
+            if result is None:
+                continue
+            # If we already have an available result for this format, skip worse ones
+            existing = next((r for r in results if r.format == result.format), None)
+            if existing is None:
+                results.append(result)
+                if result.is_available:
+                    seen_formats.add(result.format)
+            elif not existing.is_available and result.is_available:
+                results.remove(existing)
+                results.append(result)
+                seen_formats.add(result.format)
+
+        return results
+
+    def _od_availability(self, title_id: str, fmt: str, book: Book) -> DigitalResult | None:
+        url = OD_AVAILABILITY.format(title_id=title_id)
+        try:
+            resp = requests.get(
+                url, timeout=20, headers={"User-Agent": self._UA}
+            )
+            resp.raise_for_status()
+            d = resp.json()
+        except (requests.RequestException, ValueError):
+            return None
+
+        formats = [f["id"] for f in d.get("formats", [])]
+        actual_fmt = "audiobook" if any("audiobook" in f for f in formats) else "ebook"
+
+        return DigitalResult(
+            book=book,
+            title_id=title_id,
+            format=actual_fmt,
+            is_available=d.get("isAvailable", False),
+            available_copies=d.get("availableCopies", 0),
+            owned_copies=d.get("ownedCopies", 0),
+            holds_count=d.get("holdsCount", 0),
+            estimated_wait_days=d.get("estimatedWaitDays"),
+            libby_url=OD_MEDIA_URL.format(title_id=title_id),
+        )
+
     def _isbn_lookup(self, isbn: str) -> str | None:
         url = ISBN_SEARCH.format(isbn=isbn)
         try:
@@ -233,6 +307,42 @@ def _first_bib(soup: BeautifulSoup) -> str | None:
         if m:
             return m.group(1)
     return None
+
+
+def _extract_digital_title_ids(html: str, book: Book) -> list[tuple[str, str]]:
+    """Return (titleID, format) pairs from Sierra search results for digital items."""
+    soup = BeautifulSoup(html, "html.parser")
+    results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    title_words = _normalize(book.title)
+    author_words = _normalize_author(book.author)
+
+    for row in soup.find_all("tr"):
+        cells = [td.get_text(separator=" ", strip=True) for td in row.find_all("td")]
+        if not cells:
+            continue
+        row_text = " ".join(cells).lower()
+        is_ebook = "ebook" in row_text
+        is_audio = "eaudio" in row_text
+        if not is_ebook and not is_audio:
+            continue
+        # Verify title and author appear in the row
+        if not (title_words & _normalize(row_text)):
+            continue
+        if not (author_words & _normalize_author(row_text)):
+            continue
+        for a in row.find_all("a", href=re.compile(r"overdrive\.com|link\.overdrive")):
+            href = a["href"]
+            m = re.search(r"titleID=(\d+)", href) or re.search(r"/media/(\d+)", href)
+            if m:
+                title_id = m.group(1)
+                if title_id not in seen:
+                    seen.add(title_id)
+                    fmt = "audiobook" if is_audio else "ebook"
+                    results.append((title_id, fmt))
+                    if len(results) >= 6:
+                        return results
+    return results
 
 
 def _all_bibs(soup: BeautifulSoup, limit: int = 50) -> list[str]:
