@@ -26,7 +26,7 @@ cp .env.example .env
 Edit `.env`:
 
 ```
-GOODREADS_USER_ID=133374557   # the number in your Goodreads profile URL
+GOODREADS_USER_ID=123456789   # the number in your Goodreads profile URL
 VIRL_BRANCH=Sooke             # optional: your preferred branch for prioritized results
 ```
 
