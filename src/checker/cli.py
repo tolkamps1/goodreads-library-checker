@@ -9,6 +9,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCo
 from rich.table import Table
 
 from .goodreads import Book, fetch_tbr
+from .gvpl import GVPLCatalog, GVPLResult
 from .library import DigitalResult, LibraryResult, VIRLCatalog
 
 _WORKERS = 3
@@ -18,7 +19,7 @@ console = Console()
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Check your Goodreads TBR against the VIRL library catalog",
+        description="Check your Goodreads TBR against a library catalog",
     )
     parser.add_argument(
         "--user-id",
@@ -29,6 +30,12 @@ def main() -> None:
         "--shelf",
         default="to-read",
         help="Goodreads shelf name (default: to-read)",
+    )
+    parser.add_argument(
+        "--library",
+        default=os.environ.get("LIBRARY", "virl"),
+        choices=["virl", "gvpl"],
+        help="Library catalog to search: virl or gvpl (default: virl, or set LIBRARY env var)",
     )
     parser.add_argument(
         "--branch",
@@ -46,7 +53,7 @@ def main() -> None:
         "--all",
         action="store_true",
         dest="show_all",
-        help="Also show books that are checked out / unavailable (physical mode only)",
+        help="Also show books that are checked out / unavailable (VIRL only)",
     )
     args = parser.parse_args()
 
@@ -66,8 +73,12 @@ def main() -> None:
         console.print("[yellow]No books found on shelf.[/yellow]")
         sys.exit(0)
 
-    console.print(f"Found [bold]{len(books)}[/bold] books. Checking VIRL catalog...\n")
-    if args.digital:
+    library_label = args.library.upper()
+    console.print(f"Found [bold]{len(books)}[/bold] books. Checking {library_label} catalog...\n")
+
+    if args.library == "gvpl":
+        _run_gvpl(books)
+    elif args.digital:
         _run_virl_digital(books)
     else:
         _run_virl(books, branch=args.branch, show_all=args.show_all)
@@ -136,6 +147,33 @@ def _run_virl_digital(books: list[Book]) -> None:
     _print_digital_results(all_results, not_found)
 
 
+def _run_gvpl(books: list[Book]) -> None:
+    found: list[GVPLResult] = []
+    not_found: list[Book] = []
+
+    def check_one(book: Book) -> tuple[Book, GVPLResult | None]:
+        return book, GVPLCatalog().check(book)
+
+    with Progress(
+        SpinnerColumn(), BarColumn(), MofNCompleteColumn(),
+        TextColumn("{task.description}"),
+        console=console, transient=True,
+    ) as progress:
+        task = progress.add_task(f"Checking {len(books)} books...", total=len(books))
+        lock = Lock()
+        with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
+            for future in as_completed(pool.submit(check_one, b) for b in books):
+                book, result = future.result()
+                with lock:
+                    if result is not None:
+                        found.append(result)
+                    else:
+                        not_found.append(book)
+                    progress.advance(task)
+
+    _print_gvpl_results(found, not_found)
+
+
 def _print_digital_results(results: list[DigitalResult], not_found: list[Book]) -> None:
     available = [r for r in results if r.is_available]
     on_hold = [r for r in results if not r.is_available]
@@ -178,6 +216,46 @@ def _print_digital_results(results: list[DigitalResult], not_found: list[Book]) 
     if not_found:
         console.print(
             f"\n[dim]{len(not_found)} book(s) not found in VIRL digital catalog:[/dim]"
+        )
+        for book in not_found:
+            console.print(f"  [dim]• {book}[/dim]")
+
+
+def _print_gvpl_results(found: list[GVPLResult], not_found: list[Book]) -> None:
+    physical = [r for r in found if r.has_physical]
+    digital_only = [r for r in found if not r.has_physical]
+
+    if not physical and not digital_only:
+        console.print("[yellow]No books from your TBR are held at GVPL.[/yellow]")
+        return
+
+    if physical:
+        table = Table(
+            title="Held at GVPL — physical copies (check catalog for current availability)",
+            show_lines=True,
+        )
+        table.add_column("Title", style="bold", min_width=18)
+        table.add_column("Author", min_width=14)
+        table.add_column("Branches", style="green", min_width=36)
+        table.add_column("Also digital", style="cyan")
+        table.add_column("Catalog URL", style="dim")
+        for r in physical:
+            branches = ", ".join(r.branches) if r.branches else "—"
+            also_digital = "Yes (Libby)" if r.has_digital else "—"
+            table.add_row(r.book.title, r.book.author, branches, also_digital, r.catalog_url)
+        console.print(table)
+        console.print()
+
+    if digital_only:
+        console.print(
+            f"\n[dim]{len(digital_only)} book(s) held at GVPL as digital only (Libby/OverDrive):[/dim]"
+        )
+        for r in digital_only:
+            console.print(f"  [dim]• {r.book} — {r.catalog_url}[/dim]")
+
+    if not_found:
+        console.print(
+            f"\n[dim]{len(not_found)} book(s) not found in GVPL catalog:[/dim]"
         )
         for book in not_found:
             console.print(f"  [dim]• {book}[/dim]")
