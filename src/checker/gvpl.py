@@ -12,7 +12,7 @@ from .library import _normalize, _normalize_author
 
 GVPL_BASE = "https://www.gvpl.ca"
 RSS_SEARCH = GVPL_BASE + "/client/rss/hitlist/default/qu={query}"
-CATALOG_SEARCH = GVPL_BASE + "/client/en_US/default/search/results?qu={query}&te=ILS"
+CATALOG_SEARCH = GVPL_BASE + "/client/en_US/default/search/results?qu={query}&te=&lm=PHYSICALTEST"
 
 _ATOM_NS = "http://www.w3.org/2005/Atom"
 
@@ -132,8 +132,7 @@ class GVPLCatalog:
 
         has_physical = False
         has_digital = False
-        first_physical_url: str | None = None
-        first_digital_url: str | None = None
+        physical_urls: list[str] = []
 
         for entry in root.findall(f"{{{_ATOM_NS}}}entry"):
             title_el = entry.find(f"{{{_ATOM_NS}}}title")
@@ -160,25 +159,25 @@ class GVPLCatalog:
 
             if is_physical:
                 has_physical = True
-                if first_physical_url is None:
-                    first_physical_url = link
+                if len(physical_urls) < 5:
+                    physical_urls.append(link)
             else:
                 has_digital = True
-                if first_digital_url is None:
-                    first_digital_url = link
 
         if not has_physical and not has_digital:
             return None
 
         copies: list[GVPLCopy] = []
-        if first_physical_url:
+        for url in physical_urls:
             try:
-                detail_resp = self._get(first_physical_url)
+                detail_resp = self._get(url)
                 copies = _parse_item_table(detail_resp.text)
+                if copies:
+                    break
             except requests.RequestException:
-                pass
+                continue
 
-        catalog_url = CATALOG_SEARCH.format(query=quote_plus(f"{book.title} {book.author}"))
+        catalog_url = CATALOG_SEARCH.format(query=quote_plus(book.title))
         return GVPLResult(
             book=book,
             has_physical=has_physical,

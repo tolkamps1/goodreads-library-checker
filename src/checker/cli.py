@@ -231,19 +231,23 @@ def _print_gvpl_results(found: list[GVPLResult], not_found: list[Book]) -> None:
 
     if physical:
         table = Table(
-            title="Held at GVPL — physical copies (check catalog for current availability)",
+            title="Held at GVPL — branches shown; check catalog for live availability",
             show_lines=True,
         )
         table.add_column("Title", style="bold", min_width=18)
         table.add_column("Author", min_width=14)
+        table.add_column("Copies", style="yellow", justify="right")
         table.add_column("Branches", style="green", min_width=36)
         table.add_column("Also digital", style="cyan")
-        table.add_column("Catalog URL", style="dim")
         for r in physical:
+            copies = str(len(r.copies)) if r.copies else "?"
             branches = ", ".join(r.branches) if r.branches else "—"
             also_digital = "Yes (Libby)" if r.has_digital else "—"
-            table.add_row(r.book.title, r.book.author, branches, also_digital, r.catalog_url)
+            table.add_row(r.book.title, r.book.author, copies, branches, also_digital)
         console.print(table)
+        console.print()
+        for r in physical:
+            console.print(f"  [dim]{r.book.title}: {r.catalog_url}[/dim]")
         console.print()
 
     if digital_only:
